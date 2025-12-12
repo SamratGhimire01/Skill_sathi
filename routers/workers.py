@@ -1,25 +1,36 @@
-# backend/routers/workers.py (Replace entire file)
+# backend/routers/workers.py (FINAL, CORRECTED VERSION)
 
-from fastapi import APIRouter, Depends, status, HTTPException, Response
+from fastapi import APIRouter, Depends, status, HTTPException, Response, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List
-import models, schemas
+import models, schemas, os
 from database import get_db
 from . import auth
 from datetime import datetime
+from utils.notifications import trigger_worker_onboarding
+
 router = APIRouter(prefix="/workers", tags=['Workers'])
 
-# 1. CREATE WORKER
+# 1. CREATE WORKER (FIXED company_id = None ERROR)
 @router.post("/", status_code=status.HTTP_201_CREATED, response_model=schemas.WorkerOut)
-def create_worker(worker: schemas.WorkerCreate, db: Session = Depends(get_db), 
-                  current_company: models.Company = Depends(auth.get_current_company)):
+def create_worker(
+    worker: schemas.WorkerCreate, 
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db), 
+    current_company: models.Company = Depends(auth.get_current_company)
+):
     
-    if db.query(models.Worker).filter(models.Worker.worker_id == worker.worker_id).first():
+    existing_worker = db.query(models.Worker).filter(models.Worker.worker_id == worker.worker_id).first()
+    if existing_worker:
         raise HTTPException(status_code=409, detail="Worker ID already exists.")
 
     hashed_pwd = auth.hash_password(worker.password)
+    temp_password = worker.password 
+    
     new_worker = models.Worker(
+        # --- CRITICAL FIX ---
         company_id=current_company.id, 
+        # --------------------
         name=worker.name,
         email=worker.email,
         worker_id=worker.worker_id,
@@ -30,11 +41,22 @@ def create_worker(worker: schemas.WorkerCreate, db: Session = Depends(get_db),
     db.commit()
     db.refresh(new_worker)
     
-    # Audit Log
+    # Audit Log and Email Trigger
     db.add(models.AuditLog(company_id=current_company.id, actor_type="company", actor_id=current_company.id, event_type="create_worker", details=f"Created worker {worker.name}"))
     db.commit()
 
+    if new_worker.email:
+        trigger_worker_onboarding(
+            background_tasks,
+            worker_email=new_worker.email,
+            worker_name=new_worker.name,
+            worker_id=new_worker.worker_id,
+            temp_password=temp_password
+        )
+
     return new_worker
+
+# ... (rest of the file remains the same) ...
 
 # 2. GET ALL WORKERS
 @router.get("/", response_model=List[schemas.WorkerOut])
@@ -57,7 +79,6 @@ def update_worker(worker_id: int, worker_update: schemas.WorkerUpdate, db: Sessi
     worker.name = worker_update.name
     worker.email = worker_update.email
     worker.role = worker_update.role
-    # Note: We don't update password here to keep it simple, or add a separate endpoint
     
     db.commit()
     db.refresh(worker)
@@ -73,25 +94,22 @@ def delete_worker(worker_id: int, db: Session = Depends(get_db), current_company
     db.commit()
     return Response(status_code=204)
 
-# --- 6. GET WORKER'S OWN AUDIT LOGS (NEW) ---
+# 6. GET WORKER'S OWN AUDIT LOGS
 @router.get("/me/logs")
 def get_my_audit_logs(
     db: Session = Depends(get_db), 
-    current_worker: models.Worker = Depends(auth.get_current_worker) # Uses the worker dependency
+    current_worker: models.Worker = Depends(auth.get_current_worker)
 ):
-    """Returns a list of the current worker's recent activity."""
     
-    # Filter logs where actor_type is 'staff' AND actor_id matches current worker's ID
     logs = db.query(models.AuditLog).filter(
         models.AuditLog.actor_type == 'staff',
         models.AuditLog.actor_id == current_worker.id
     ).order_by(models.AuditLog.timestamp.desc()).limit(10).all()
     
-    # We must format the output to be JSON-safe (and slightly cleaner)
     formatted_logs = []
     for log in logs:
         formatted_logs.append({
-            "timestamp": log.timestamp.strftime("%b %d, %I:%M %p"), # e.g., Dec 10, 09:30 AM
+            "timestamp": log.timestamp.strftime("%b %d, %I:%M %p"),
             "event_type": log.event_type,
             "details": log.details
         })

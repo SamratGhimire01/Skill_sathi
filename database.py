@@ -1,3 +1,5 @@
+# backend/database.py (REVERTED TO LOCALHOST)
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -5,9 +7,11 @@ from dotenv import load_dotenv
 from urllib.parse import quote_plus
 import os
 
+# Load variables from the .env file into the environment
 load_dotenv()
 
-DB_HOSTNAME = os.getenv("DATABASE_HOSTNAME")
+# Get database credentials from .env file
+DB_HOSTNAME = os.getenv("DATABASE_HOSTNAME") # Should be 'localhost' or '127.0.0.1' from .env
 DB_PORT = os.getenv("DATABASE_PORT")
 DB_PASSWORD = os.getenv("DATABASE_PASSWORD")
 DB_NAME = os.getenv("DATABASE_NAME")
@@ -15,9 +19,7 @@ DB_USERNAME = os.getenv("DATABASE_USERNAME")
 
 if not all([DB_HOSTNAME, DB_PORT, DB_PASSWORD, DB_NAME, DB_USERNAME]):
     raise ValueError("❌ Missing database variables in .env file.")
-# CRITICAL FIX: If Docker is running (based on presence of DOCKER_ENV var), use the service name 'db'
-if os.getenv('DOCKER_ENV') == 'true':
-    DB_HOSTNAME = 'db'
+
 # Handle special characters in password
 encoded_password = quote_plus(DB_PASSWORD)
 

@@ -1,13 +1,14 @@
 # backend/routers/certificates.py
 
-from fastapi import APIRouter, Depends, status, HTTPException, File, UploadFile, Form
+from fastapi import APIRouter, Depends, status, HTTPException, File, UploadFile, Form, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import date, datetime
 import uuid, hashlib, io, csv, codecs
 from fastapi import BackgroundTasks
-from utils.notifications import trigger_certificate_email
+from utils.notifications import send_email_real
+from utils.notifications import trigger_certificate_email, trigger_recipient_certificate
 
 import models, schemas
 from database import get_db
@@ -299,3 +300,41 @@ def delete_certificate(cert_id: int, confirm_name: str = Form(...), db: Session 
     db.delete(cert)
     db.commit()
     return {"message": "Deleted"}
+
+# 8. NEW: SEND CERTIFICATE TO RECIPIENT
+@router.post("/{cert_id}/send-email")
+def send_certificate_email(
+    cert_id: int, 
+    background_tasks: BackgroundTasks, 
+    db: Session = Depends(get_db), 
+    current_company: models.Company = Depends(auth.get_current_company)
+):
+    cert = db.query(models.Certificate).filter(
+        models.Certificate.id == cert_id,
+        models.Certificate.company_id == current_company.id,
+        models.Certificate.status == 'active' # Only send active certificates
+    ).first()
+
+    if not cert or not cert.pdf_data:
+        raise HTTPException(status_code=404, detail="Certificate not found or PDF data is missing.")
+        
+    if not cert.recipient_email:
+        raise HTTPException(status_code=400, detail="Recipient email is missing.")
+
+    # 1. Prepare Data for Email
+    cert_data_dict = {
+        'recipient_name': cert.recipient_name,
+        'recipient_email': cert.recipient_email,
+        'course_title': cert.course_title,
+        'certificate_uid': cert.certificate_uid,
+        'sha_hash': cert.sha_hash
+    }
+
+    # 2. Trigger the Send (with PDF attachment)
+    trigger_recipient_certificate(
+        background_tasks,
+        cert_data=cert_data_dict,
+        pdf_data=cert.pdf_data
+    )
+
+    return {"message": f"Certificate sent to {cert.recipient_email}"}
